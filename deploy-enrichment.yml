@@ -1,0 +1,82 @@
+name: Deploy JH Enrichment API to Hetzner VPS
+
+on:
+  push:
+    branches:
+      - main  # O la rama que uses para producción para ESTA aplicación
+
+jobs:
+  deploy-enrichment: # Nombre del job, puede ser diferente
+    runs-on: ubuntu-latest
+    
+    env:
+      VPS_USER: root
+      VPS_HOST: ${{ secrets.HOST }} # Asumimos que usas el mismo secret HOST
+      # ¡IMPORTANTE! Nueva ruta para esta aplicación
+      APP_PATH_ON_VPS: /srv/jh-enrichment-production # Ruta de despliegue para la app de enriquecimiento
+      DOCKER_COMPOSE_SERVICE_NAME: enrichment-service # Nombre del servicio en docker-compose.yml
+      DOCKER_COMPOSE_FILE: docker-compose.yml # Nombre del archivo compose
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up SSH key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_KEY }} # Asumimos que usas el mismo secret SSH_KEY
+
+      - name: Create deployment directory on VPS
+        run: |
+          echo "Attempting to create directory ${{ env.APP_PATH_ON_VPS }} on host ${{ env.VPS_HOST }} as user ${{ env.VPS_USER }}"
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ${{ env.VPS_USER }}@${{ env.VPS_HOST }} "mkdir -p ${{ env.APP_PATH_ON_VPS }}"
+
+      - name: Copy files to VPS using rsync
+        run: |
+          echo "--- Debug: GITHUB_WORKSPACE (source directory) is: '${GITHUB_WORKSPACE}'"
+          echo "--- Debug: Listing GITHUB_WORKSPACE content ---"
+          ls -la "${GITHUB_WORKSPACE}"
+          echo "--- Debug: Copying from '${GITHUB_WORKSPACE}/' to '${VPS_USER}@${VPS_HOST}:${APP_PATH_ON_VPS}/'"
+          
+          rsync -avz --delete \
+            --exclude 'node_modules/' \
+            --exclude '.git/' \
+            --exclude '.gitignore' \
+            --exclude '.env*' \           
+            --exclude 'enrichment_logs/' \ # Si tienes esta carpeta localmente y no quieres subirla
+            --exclude 'job_logs/' \ # Si copiaste esta carpeta del otro proyecto
+            --exclude 'job_logs_copiados_del_contenedor/' \
+            -e "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
+            "${GITHUB_WORKSPACE}/" "${VPS_USER}@${VPS_HOST}:${APP_PATH_ON_VPS}/"
+
+      - name: Deploy application on VPS
+        run: |
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ${{ env.VPS_USER }}@${{ env.VPS_HOST }} << 'ENDSSH'
+            echo "--- NAVIGATING TO APP DIRECTORY: ${{ env.APP_PATH_ON_VPS }} ---"
+            cd ${{ env.APP_PATH_ON_VPS }}
+            
+            echo "--- VERIFYING COPIED FILES (listing current directory on VPS) ---"
+            ls -la
+            
+            echo "--- GENERATING .env.production.enrichment FILE ON SERVER ---"
+            # Nombre del archivo .env específico para esta app si es necesario
+            echo "NODE_ENV=production" > .env.production.enrichment 
+            echo "PORT=3002" >> .env.production.enrichment # Asegura que el puerto esté aquí si no está en el Dockerfile directamente
+            # Si tienes más variables de entorno para esta aplicación, añádelas aquí usando secrets:
+            # echo "ENRICHMENT_API_KEY=${{ secrets.ENRICHMENT_API_KEY_SECRET }}" >> .env.production.enrichment
+            echo ".env.production.enrichment file generated."
+
+            echo "--- STOPPING OLD DOCKER CONTAINERS (IF ANY) ---"
+            docker-compose -f ${{ env.DOCKER_COMPOSE_FILE }} down --remove-orphans || echo "Info: No containers to stop or already stopped."
+            
+            echo "--- BUILDING DOCKER IMAGE FOR '${{ env.DOCKER_COMPOSE_SERVICE_NAME }}' SERVICE ---"
+            docker-compose -f ${{ env.DOCKER_COMPOSE_FILE }} build ${{ env.DOCKER_COMPOSE_SERVICE_NAME }}
+            
+            echo "--- STARTING NEW DOCKER CONTAINERS IN DETACHED MODE ---"
+            docker-compose -f ${{ env.DOCKER_COMPOSE_FILE }} up -d ${{ env.DOCKER_COMPOSE_SERVICE_NAME }}
+            
+            echo "--- CLEANING UP UNUSED DOCKER IMAGES ---"
+            docker image prune -af || echo "Info: No images to prune or pruner failed."
+            
+            echo "--- DEPLOYMENT SCRIPT COMPLETED SUCCESSFULLY ---"
+          ENDSSH

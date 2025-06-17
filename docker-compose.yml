@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  enrichment-service: # Nombre del servicio que N8N usará (ej. http://enrichment-service:3002/)
+    build:
+      context: . # Construye desde el Dockerfile en el directorio actual
+    image: jh-enrichment-app # Nombre local para la imagen construida
+    container_name: jh-enrichment-container # Nombre para el contenedor en ejecución
+    restart: unless-stopped
+    
+    # El puerto INTERNO del contenedor es 3002 (definido por ENV PORT en Dockerfile)
+    # Elige cómo quieres exponerlo:
+    # OPCIÓN A: Exponer solo a la red interna de Docker (más seguro si solo N8N lo accede)
+    expose:
+      - "3002" 
+    
+    # OPCIÓN B: Mapear a un puerto del HOST VPS (si necesitas acceso externo directo por IP:PUERTO_HOST)
+    # Asegúrate de que el PUERTO_HOST (ej. 3002 o 3001) esté libre en el VPS.
+    # Comenta 'expose' si usas 'ports'.
+    # ports:
+    #   - "3002:3002" # Mapea 3002 del host al 3002 del contenedor
+
+    # environment: # Si necesitas variables de entorno adicionales en tiempo de ejecución
+      # - MI_VARIABLE_ESPECIFICA=valor_de_produccion_aqui
+      # NODE_ENV y PORT ya están definidos en el Dockerfile
+      
+    # Descomenta y ajusta si esta aplicación necesita un archivo .env específico
+    # env_file:
+    #   - ./.env.enrichment.production
+
+    # Volumen para logs persistentes de esta aplicación (si genera logs en archivos)
+    # Si no genera logs en una subcarpeta 'enrichment_logs', puedes omitir esta sección de volumen.
+    volumes:
+      - enrichment_app_logs:/usr/src/app/enrichment_logs 
+
+    logging: # Configuración para los logs del CONTENEDOR (stdout/stderr)
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+        
+    networks: # Conecta este servicio a la red 'mi_red_app'
+      - mi_red_app
+
+# Define el Named Volume para los logs de esta aplicación (si se usa arriba)
+volumes:
+  enrichment_app_logs: {}
+
+# Define la red externa
+networks:
+  mi_red_app:
+    external: true
